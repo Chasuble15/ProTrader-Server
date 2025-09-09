@@ -55,6 +55,21 @@ async def ws_agent(ws: WebSocket):
     print("[backend] agent connected")
     await broadcast_ui({"type":"agent_status","connected": True})
 
+    # Auto mode: start script automatically if enabled
+    if load_auto_mode_from_db():
+        try:
+            resources = get_selected_slugs()
+            cmd = {
+                "type": "command",
+                "command_id": int(time.time()*1000),
+                "cmd": "start_script",
+                "args": {"resources": resources},
+            }
+            await send_to_agent(cmd)
+            await broadcast_ui({"type": "command_sent", "command_id": cmd["command_id"], "cmd": cmd["cmd"]})
+        except Exception as e:
+            print("[backend] auto start_script failed:", e)
+
     while pending_cmds:
         try:
             cmd = pending_cmds.pop(0)
@@ -126,6 +141,64 @@ def get_db():
   conn.row_factory = sqlite3.Row
   return conn
 
+
+# --- Settings: auto mode ------------------------------------------------------
+
+def ensure_settings_schema(conn: sqlite3.Connection):
+    cur = conn.cursor()
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS settings (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        )
+        """
+    )
+    conn.commit()
+
+
+def load_auto_mode_from_db() -> bool:
+    conn = get_db()
+    try:
+        ensure_settings_schema(conn)
+        cur = conn.cursor()
+        cur.execute("SELECT value FROM settings WHERE key='auto_mode'")
+        row = cur.fetchone()
+        return bool(row and row["value"] == "1")
+    finally:
+        conn.close()
+
+
+def save_auto_mode_to_db(auto: bool) -> None:
+    conn = get_db()
+    try:
+        ensure_settings_schema(conn)
+        conn.execute(
+            "REPLACE INTO settings (key, value) VALUES ('auto_mode', ?)",
+            ("1" if auto else "0",),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_selected_slugs() -> List[str]:
+    conn = get_db()
+    try:
+        ensure_selection_schema(conn)
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT i.slug_fr
+            FROM selection_items s
+            JOIN items i ON i.id = s.item_id
+            ORDER BY s.position ASC
+            """
+        )
+        rows = cur.fetchall()
+        return [r["slug_fr"] for r in rows]
+    finally:
+        conn.close()
 
 # Crée la table si besoin
 def ensure_selection_schema(conn: sqlite3.Connection):
@@ -200,6 +273,18 @@ def save_selection(body: SaveSelectionBody):
     finally:
         conn.close()
     return {"ok": True, "count": len(body.ids)}
+
+
+@app.get("/api/auto_mode")
+def get_auto_mode_endpoint():
+    return {"auto": load_auto_mode_from_db()}
+
+
+@app.post("/api/auto_mode")
+def save_auto_mode_endpoint(body: Dict[str, Any] = Body(...)):
+    auto = bool(body.get("auto"))
+    save_auto_mode_to_db(auto)
+    return {"ok": True}
 
 
 @app.get("/api/items")

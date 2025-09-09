@@ -58,12 +58,26 @@ async def ws_agent(ws: WebSocket):
     # Auto mode: start script automatically if enabled
     if load_auto_mode_from_db():
         try:
-            resources = get_selected_slugs()
+            items = get_selected_items()
+            args = {
+                "item_ids": [it["id"] for it in items],
+                "items": [
+                    {
+                        "id": it["id"],
+                        "name_fr": it["name_fr"],
+                        "slug_fr": it["slug_fr"],
+                        "level": it["level"],
+                        "order": idx,
+                        "img_blob": it["img_blob"],
+                    }
+                    for idx, it in enumerate(items)
+                ],
+            }
             cmd = {
                 "type": "command",
                 "command_id": int(time.time()*1000),
                 "cmd": "start_script",
-                "args": {"resources": resources},
+                "args": args,
             }
             await send_to_agent(cmd)
             await broadcast_ui({"type": "command_sent", "command_id": cmd["command_id"], "cmd": cmd["cmd"]})
@@ -197,6 +211,25 @@ def get_selected_slugs() -> List[str]:
         )
         rows = cur.fetchall()
         return [r["slug_fr"] for r in rows]
+    finally:
+        conn.close()
+
+
+def get_selected_items() -> List[Dict[str, Any]]:
+    conn = get_db()
+    try:
+        ensure_selection_schema(conn)
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT i.id, i.name_fr, i.slug_fr, i.level, i.img_blob
+            FROM selection_items s
+            JOIN items i ON i.id = s.item_id
+            ORDER BY s.position ASC
+            """
+        )
+        rows = cur.fetchall()
+        return [row_to_item(r) for r in rows]
     finally:
         conn.close()
 

@@ -1,6 +1,6 @@
 # backend/app.py
 # pip install fastapi "uvicorn[standard]" websockets
-import asyncio, json, time
+import asyncio, json, time, statistics
 from typing import Optional, Dict, Any, List
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Body
 from fastapi.middleware.cors import CORSMiddleware
@@ -658,3 +658,53 @@ def get_hdv_timeseries(
 
     conn.close()
     return {"series": series}
+
+
+@app.get("/api/hdv/price_stat")
+def get_hdv_price_stat(
+    slug: str = Query(..., description="Slug de la ressource"),
+    qty: str = Query(..., description="Quantité: x1,x10,x100,x1000"),
+    date_from: str | None = Query(default=None, description="Début (ISO8601)"),
+    date_to: str | None = Query(default=None, description="Fin (ISO8601)"),
+    stat: str = Query(default="avg", pattern="^(avg|median)$"),
+):
+    """Retourne une statistique simple (moyenne ou médiane) pour une ressource."""
+    conn = get_db()
+    ensure_price_schema(conn)
+    cur = conn.cursor()
+
+    dt_from, dt_to = _parse_iso_to_utc_bounds(date_from, date_to)
+
+    where = ["slug = ?", "qty = ?"]
+    params: list[Any] = [slug, qty]
+
+    if dt_from:
+        if len(dt_from) == 10:
+            where.append("datetime >= ?")
+            params.append(dt_from + "T00:00:00Z")
+        else:
+            where.append("datetime >= ?")
+            params.append(dt_from)
+    if dt_to:
+        if len(dt_to) == 10:
+            where.append("datetime < ?")
+            params.append(dt_to + "T23:59:59Z")
+        else:
+            where.append("datetime <= ?")
+            params.append(dt_to)
+
+    where_sql = "WHERE " + " AND ".join(where)
+
+    cur.execute(f"SELECT price FROM hdv_prices {where_sql} ORDER BY price ASC", params)
+    prices = [r["price"] for r in cur.fetchall()]
+    conn.close()
+
+    if not prices:
+        return {"slug": slug, "qty": qty, "stat": stat, "value": None, "points": 0}
+
+    if stat == "avg":
+        value = statistics.mean(prices)
+    else:
+        value = statistics.median(prices)
+
+    return {"slug": slug, "qty": qty, "stat": stat, "value": value, "points": len(prices)}
